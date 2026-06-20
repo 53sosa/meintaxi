@@ -1,46 +1,115 @@
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { decrypt } from '../../../../lib/session';
 import { openDb } from '../../../../lib/db';
 
 export async function GET(request: Request) {
   try {
-    // 1. KVNR und Geburtsdatum aus den URL-Parametern auslesen
     const { searchParams } = new URL(request.url);
-    const kvnr = searchParams.get('kvnr');
+    let kvnr = searchParams.get('kvnr');
     const geburtsdatum = searchParams.get('geburtsdatum');
 
-    if (!kvnr || !geburtsdatum) {
-      return NextResponse.json(
-        { success: false, error: "Bitte Versichertennummer und Geburtsdatum angeben." }, 
-        { status: 400 }
+    // Session prüfen
+    const cookieStore = await cookies();
+    const sessionCookie = cookieStore.get('session')?.value;
+    let session: any = null;
+
+    if (sessionCookie) {
+      session = await decrypt(sessionCookie);
+    }
+
+    const db = await openDb();
+    let ride = null;
+
+    // ==========================================
+    // SZENARIO A: Eingeloggter Patient
+    // KVNR aus DB holen, nur Session nötig
+    // ==========================================
+    if (session && session.role === 'patient') {
+      if (!kvnr) {
+        const patient = await db.get(
+          `SELECT kvnr FROM patienten WHERE id = ?`,
+          [session.userId]
+        );
+        kvnr = patient?.kvnr ?? null;
+      }
+
+      if (!kvnr) {
+        return NextResponse.json(
+          { success: false, error: 'Keine gültige KVNR für diesen Patienten gefunden.' },
+          { status: 400 }
+        );
+      }
+
+      ride = await db.get(
+        `SELECT
+          id, status,
+          patient_vorname, patient_nachname,
+          patient_geburtsdatum, patient_kvnr,
+          versichertenstatus,
+          kasse_name, kasse_ik,
+          arzt_bsnr, arzt_lanr, verordnungsdatum,
+          fahrt_von, fahrt_nach,
+          fahrt_grund_code, befoerderungsart,
+          hinfahrt, rueckfahrt,
+          zuzahlungspflichtig, zuzahlungsbefreit,
+          behandlung_beschreibung, gueltig_bis,
+          erstellt_am
+        FROM verordnungen
+        WHERE UPPER(patient_kvnr) = ? AND status = 'offen'
+        ORDER BY erstellt_am DESC LIMIT 1`,
+        [kvnr.trim().toUpperCase()]
+      );
+
+    // ==========================================
+    // SZENARIO B: Kein Login
+    // KVNR + Geburtsdatum als URL-Parameter
+    // ==========================================
+    } else {
+      if (!kvnr || !geburtsdatum) {
+        return NextResponse.json(
+          { success: false, error: 'Bitte Versichertennummer und Geburtsdatum angeben oder einloggen.' },
+          { status: 400 }
+        );
+      }
+
+      ride = await db.get(
+        `SELECT
+          id, status,
+          patient_vorname, patient_nachname,
+          patient_geburtsdatum, patient_kvnr,
+          versichertenstatus,
+          kasse_name, kasse_ik,
+          arzt_bsnr, arzt_lanr, verordnungsdatum,
+          fahrt_von, fahrt_nach,
+          fahrt_grund_code, befoerderungsart,
+          hinfahrt, rueckfahrt,
+          zuzahlungspflichtig, zuzahlungsbefreit,
+          behandlung_beschreibung, gueltig_bis,
+          erstellt_am
+        FROM verordnungen
+        WHERE UPPER(patient_kvnr) = ?
+          AND patient_geburtsdatum = ?
+          AND status = 'offen'
+        ORDER BY erstellt_am DESC LIMIT 1`,
+        [kvnr.trim().toUpperCase(), geburtsdatum.trim()]
       );
     }
 
-    // 2. Datenbank öffnen
-    const db = await openDb();
-
-    // 3. Nach einer offenen Verordnung für diesen Patienten suchen
-    const ride = await db.get(
-      `SELECT * FROM verordnungen 
-       WHERE patient_kvnr = ? AND patient_geburtsdatum = ? AND status = 'offen'
-       LIMIT 1`,
-      [kvnr.trim(), geburtsdatum.trim()]
-    );
-
-    await db.close();
-
-    // 4. Wenn keine Fahrt gefunden wurde
     if (!ride) {
       return NextResponse.json(
-        { success: false, error: "Keine offene Verordnung für diese Daten gefunden." }, 
-        { status: 404 }
+        { success: true, ride: null, message: 'Keine offene Verordnung gefunden.' },
+        { status: 200 }
       );
     }
 
-    // 5. Fahrt erfolgreich gefunden!
     return NextResponse.json({ success: true, ride }, { status: 200 });
 
-  } catch (error) {
-    console.error("❌ PATIENTEN-API-FEHLER:", error);
-    return NextResponse.json({ success: false, error: "Serverfehler beim Abrufen der Fahrt" }, { status: 500 });
+  } catch (error: any) {
+    console.error('❌ PATIENTEN-API-FEHLER:', error);
+    return NextResponse.json(
+      { success: false, error: 'Serverfehler beim Abrufen der Fahrt' },
+      { status: 500 }
+    );
   }
 }

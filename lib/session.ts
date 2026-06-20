@@ -1,47 +1,71 @@
-import { SignJWT, jwtVerify } from 'jose';
+import { SignJWT, jwtVerify, JWTPayload } from 'jose';
 import { cookies } from 'next/headers';
 
-const secretKey = new TextEncoder().encode('meintaxi-super-secret-key-2026-sprint');
+const getSecret = () => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error('JWT_SECRET ist nicht gesetzt in .env.local');
+  return new TextEncoder().encode(secret);
+};
 
-export async function encrypt(payload: any, expiresIn: string) {
-  return await new SignJWT(payload)
+// JWTPayload erweitern damit jose keine Typ-Fehler wirft
+export interface SessionPayload extends JWTPayload {
+  userId: number;
+  role: 'fahrer' | 'unternehmen' | 'patient';
+  wagenNr?: string;
+  expires: string;
+}
+
+export async function createSession(
+  userId: number,
+  role: 'fahrer' | 'unternehmen' | 'patient',
+  wagenNr?: string
+) {
+  const expires = new Date(Date.now() + 60 * 60 * 1000);
+
+  const payload: SessionPayload = {
+    userId,
+    role,
+    expires: expires.toISOString(),
+    ...(wagenNr ? { wagenNr } : {}),
+  };
+
+  const token = await new SignJWT(payload)
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
-    .setExpirationTime(expiresIn) 
-    .sign(secretKey);
-}
+    .setExpirationTime('1h')
+    .sign(getSecret());
 
-export async function decrypt(input: string): Promise<any> {
-  try {
-    const { payload } = await jwtVerify(input, secretKey, {
-      algorithms: ['HS256'],
-    });
-    return payload;
-  } catch (error) {
-    return null; // Wenn Session abgelaufen oder ungültig, gib null zurück
-  }
-}
-
-// Funktion: Nutzer einloggen (Strikte 60 Minuten für ALLE Rollen)
-export async function createSession(userId: number, role: 'fahrer' | 'unternehmen', wagenNr?: string) {
-  const hours = 1;
-  const expires = new Date(Date.now() + hours * 60 * 60 * 1000); 
-  const expiresInString = `${hours}h`; // Backticks für die Variable
-
-  const session = await encrypt({ userId, role, wagenNr, expires }, expiresInString);
-
-  // WICHTIG FÜR NEXT.JS 15: cookies() muss mit "await" aufgerufen werden!
   const cookieStore = await cookies();
-  cookieStore.set('session', session, {
-    expires,
+  cookieStore.set('session', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
+    expires,
     path: '/',
   });
 }
 
-// Funktion: Nutzer ausloggen (US-02)
+export async function getSession(): Promise<SessionPayload | null> {
+  try {
+    const cookieStore = await cookies();
+    const token = cookieStore.get('session')?.value;
+    if (!token) return null;
+    const { payload } = await jwtVerify(token, getSecret());
+    return payload as SessionPayload;
+  } catch {
+    return null;
+  }
+}
+
+export async function decrypt(token: string): Promise<SessionPayload | null> {
+  try {
+    const { payload } = await jwtVerify(token, getSecret());
+    return payload as SessionPayload;
+  } catch {
+    return null;
+  }
+}
+
 export async function deleteSession() {
   const cookieStore = await cookies();
   cookieStore.delete('session');
