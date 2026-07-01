@@ -46,7 +46,7 @@ export async function GET() {
     }
 
     // ==========================================
-    // FAHRER — wagenNr aus Session zurückgeben
+    // FAHRER
     // ==========================================
     if (session.role === 'fahrer') {
       const fahrer = await db.get(
@@ -65,13 +65,7 @@ export async function GET() {
         );
       }
 
-      return NextResponse.json({
-        role: 'fahrer',
-        fahrer: {
-          ...fahrer,
-          wagenNr: session.wagenNr ?? null,
-        },
-      });
+      return NextResponse.json({ role: 'fahrer', fahrer });
     }
 
     // ==========================================

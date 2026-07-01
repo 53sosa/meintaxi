@@ -13,6 +13,10 @@ export default function DashboardPage() {
   const [error, setError]             = useState('');
   const [freigabeLoading, setFreigabeLoading] = useState<string | null>(null);
 
+  // Ausstehende Fahrer-Genehmigungen (US-1.2 AC2/AC3, US-1.4 AC3, US-NEXT-09)
+  const [ausstehendeFahrer, setAusstehendeFahrer] = useState<any[]>([]);
+  const [genehmigenLoading, setGenehmigenLoading] = useState<string | null>(null);
+
   // Filter
   const [filterStatus, setFilterStatus] = useState('alle');
   const [filterJahr, setFilterJahr]     = useState(new Date().getFullYear().toString());
@@ -36,6 +40,31 @@ export default function DashboardPage() {
     setStats(data.stats ?? null);
   }, [filterStatus, filterJahr, filterMonat]);
 
+  const ladeAusstehendeFahrer = useCallback(async () => {
+    const res = await fetch('/api/dashboard/fahrer');
+    if (!res.ok) return; // nicht kritisch fürs restliche Dashboard
+    const data = await res.json();
+    setAusstehendeFahrer(data.fahrer ?? []);
+  }, []);
+
+  const handleFahrerGenehmigung = async (fahrer_id: string, aktion: 'genehmigen' | 'ablehnen') => {
+    setGenehmigenLoading(fahrer_id);
+    try {
+      const res = await fetch('/api/dashboard/fahrer/genehmigen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fahrer_id, aktion }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      await ladeAusstehendeFahrer();
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setGenehmigenLoading(null);
+    }
+  };
+
   useEffect(() => {
     const ladeDashboard = async () => {
       try {
@@ -45,6 +74,7 @@ export default function DashboardPage() {
         if (meData.role !== 'unternehmen') { router.push('/login'); return; }
         setUnternehmen(meData.unternehmen);
         await ladeFahrten();
+        await ladeAusstehendeFahrer();
       } catch (err: any) {
         setError(err.message);
       } finally {
@@ -89,6 +119,12 @@ export default function DashboardPage() {
   }
 
   const jahre = ['2025', '2026', '2027'];
+  const statusLabels: Record<string, string> = {
+    nicht_freigegeben: 'Zur Freigabe',
+    freigegeben:        'Freigegeben',
+    abgelehnt:           'Abgelehnt',
+    gkv_uebermittelt: 'GKV übermittelt',
+  };
   const monate = [
     { val: '', label: 'Alle Monate' },
     { val: '01', label: 'Januar' }, { val: '02', label: 'Februar' },
@@ -139,6 +175,38 @@ export default function DashboardPage() {
           </div>
         </div>
 
+        {ausstehendeFahrer.length > 0 && (
+          <div className="bg-amber-50 rounded-2xl border border-amber-200 p-4 space-y-2">
+            <h2 className="font-bold text-amber-800 text-sm">
+              ⏳ Ausstehende Fahrer-Genehmigungen ({ausstehendeFahrer.length})
+            </h2>
+            {ausstehendeFahrer.map((f) => (
+              <div key={f.id} className="flex items-center justify-between bg-white rounded-xl px-3 py-2 border border-amber-100">
+                <div>
+                  <p className="text-sm font-semibold text-gray-800">{f.vorname} {f.nachname}</p>
+                  <p className="text-xs text-gray-500">{f.email}</p>
+                </div>
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => handleFahrerGenehmigung(f.id, 'genehmigen')}
+                    disabled={genehmigenLoading === f.id}
+                    className="bg-green-600 text-white text-xs px-2 py-1 rounded-lg hover:bg-green-700 disabled:opacity-50 font-semibold"
+                  >
+                    {genehmigenLoading === f.id ? '...' : '✓ Genehmigen'}
+                  </button>
+                  <button
+                    onClick={() => handleFahrerGenehmigung(f.id, 'ablehnen')}
+                    disabled={genehmigenLoading === f.id}
+                    className="bg-red-100 text-red-700 text-xs px-2 py-1 rounded-lg hover:bg-red-200 disabled:opacity-50 font-semibold"
+                  >
+                    ✗
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {error && (
           <div className="p-3 bg-red-50 text-red-600 text-sm rounded-xl border border-red-100">
             ⚠️ {error}
@@ -155,6 +223,7 @@ export default function DashboardPage() {
               { val: 'nicht_freigegeben',  label: '⏳ Zur Freigabe' },
               { val: 'freigegeben',        label: '✓ Freigegeben' },
               { val: 'abgelehnt',          label: '✗ Abgelehnt' },
+              { val: 'gkv_uebermittelt',   label: '↗ GKV übermittelt' },
             ].map(({ val, label }) => (
               <button key={val} onClick={() => setFilterStatus(val)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
@@ -184,7 +253,7 @@ export default function DashboardPage() {
             <div>
               <h2 className="font-bold text-gray-800">Fahrtenhistorie</h2>
               <p className="text-xs text-gray-500 mt-0.5">
-                {fahrten.length} Fahrten · {filterStatus === 'alle' ? 'Alle Status' : filterStatus}
+                {fahrten.length} Fahrten · {filterStatus === 'alle' ? 'Alle Status' : (statusLabels[filterStatus] ?? filterStatus)}
               </p>
             </div>
           </div>
@@ -225,21 +294,25 @@ export default function DashboardPage() {
                       </td>
                       <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
                         {fahrt.fahrer_vorname} {fahrt.fahrer_nachname}
-                        <span className="text-xs text-gray-400 ml-1">· Wgn {fahrt.wagennummer}</span>
                       </td>
                       <td className="px-4 py-3 text-gray-600 text-xs max-w-[140px] truncate">
                         {fahrt.fahrt_von} → {fahrt.fahrt_nach}
                       </td>
                       <td className="px-4 py-3 text-center">
                         {fahrt.fahrtrichtung === 'beide'
-                          ? <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full text-xs font-semibold">Hin + Rück</span>
+                          ? <span className="bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full text-xs font-semibold">Hin + Rück</span>
                           : fahrt.fahrtrichtung === 'hinfahrt'
-                          ? <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-xs font-semibold">Hinfahrt</span>
-                          : <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-xs font-semibold">Rückfahrt</span>
+                          ? <span className="bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full text-xs font-semibold">Hinfahrt</span>
+                          : <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded-full text-xs font-semibold">Rückfahrt</span>
                         }
                       </td>
                       <td className="px-4 py-3 text-right text-gray-600">
                         {fahrt.km_einfach} km
+                        {fahrt.km_kommentar && (
+                          <span className="ml-1 text-amber-500 cursor-help" title={fahrt.km_kommentar}>
+                            📝
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-right font-semibold">
                         {fahrt.gesamt_brutto?.toFixed(2)} €

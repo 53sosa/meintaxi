@@ -11,14 +11,12 @@ const getSecret = () => {
 export interface SessionPayload extends JWTPayload {
   userId: number;
   role: 'fahrer' | 'unternehmen' | 'patient';
-  wagenNr?: string;
   expires: string;
 }
 
 export async function createSession(
   userId: number,
-  role: 'fahrer' | 'unternehmen' | 'patient',
-  wagenNr?: string
+  role: 'fahrer' | 'unternehmen' | 'patient'
 ) {
   const expires = new Date(Date.now() + 60 * 60 * 1000);
 
@@ -26,7 +24,6 @@ export async function createSession(
     userId,
     role,
     expires: expires.toISOString(),
-    ...(wagenNr ? { wagenNr } : {}),
   };
 
   const token = await new SignJWT(payload)

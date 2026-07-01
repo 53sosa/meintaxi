@@ -14,6 +14,25 @@ const FAHRT_GRUND_MAP: Record<string, string> = {
   f: 'Anderer Grund für KTW (Lagerung, Tragen, Heben)',
 };
 
+// Live-Status-Anzeige für den Patienten (US-2.2 AC3)
+const STATUS_ANZEIGE: Record<string, { label: string; badge: string; punkt: string }> = {
+  offen: {
+    label: 'Offen — noch keine Fahrt durchgeführt',
+    badge: 'bg-gray-100 text-gray-600',
+    punkt: 'bg-gray-400',
+  },
+  hinfahrt_abgeschlossen: {
+    label: 'Hinfahrt durchgeführt ✓',
+    badge: 'bg-amber-50 text-amber-700',
+    punkt: 'bg-amber-400',
+  },
+  abgeschlossen: {
+    label: 'Vollständig abgeschlossen',
+    badge: 'bg-green-50 text-green-700',
+    punkt: 'bg-green-500',
+  },
+};
+
 export default function PatientDashboard() {
   const router = useRouter();
   const [patientData, setPatientData]     = useState<any>(null);
@@ -112,22 +131,35 @@ export default function PatientDashboard() {
         {ride && (
           <div className="space-y-5">
 
-            {/* QR-CODE — immer sichtbar */}
+            {/* QR-CODE — sichtbar solange nicht vollständig abgeschlossen,
+                danach ausgegraut mit Hinweis (US-2.2 AC2/AC4) */}
             <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 flex flex-col items-center">
               <span className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-3">
                 Code beim Einstieg vorzeigen
               </span>
-              <div className="bg-white p-3 rounded-xl shadow-sm border border-gray-100">
+              <div className={`bg-white p-3 rounded-xl shadow-sm border border-gray-100 ${
+                ride.status === 'abgeschlossen' ? 'opacity-30 grayscale' : ''
+              }`}>
                 <QRCodeSVG value={ride.id} size={200} level="M" />
               </div>
               <span className="text-[10px] text-gray-400 mt-2 font-mono">
                 ID: {ride.id}
               </span>
-              <div className="mt-2 px-3 py-1 bg-green-50 rounded-full">
-                <span className="text-xs text-green-600 font-semibold">
-                  ● Gültig · Status: {ride.status}
+              <div className={`mt-2 px-3 py-1 rounded-full flex items-center gap-1.5 ${
+                (STATUS_ANZEIGE[ride.status] ?? STATUS_ANZEIGE.offen).badge
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  (STATUS_ANZEIGE[ride.status] ?? STATUS_ANZEIGE.offen).punkt
+                }`} />
+                <span className="text-xs font-semibold">
+                  {(STATUS_ANZEIGE[ride.status] ?? STATUS_ANZEIGE.offen).label}
                 </span>
               </div>
+              {ride.status === 'abgeschlossen' && (
+                <p className="text-[10px] text-gray-400 mt-2 text-center">
+                  Dieser QR-Code ist nicht mehr gültig.
+                </p>
+              )}
             </div>
 
             {/* DSGVO-ENTSPERRUNG */}

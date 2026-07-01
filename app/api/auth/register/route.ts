@@ -110,14 +110,19 @@ export async function POST(request: Request) {
         );
       }
 
+      // Status explizit 'ausstehend' — Fahrer kann erst nach Genehmigung
+      // durch den Taxiunternehmer einloggen (US-1.2 AC2/AC3, US-NEXT-09)
       await db.run(
-        `INSERT INTO fahrer (unternehmen_id, vorname, nachname, email, passwort_hash)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO fahrer (unternehmen_id, vorname, nachname, email, passwort_hash, status)
+         VALUES (?, ?, ?, ?, ?, 'ausstehend')`,
         [unternehmen.id, vorname, nachname, cleanEmail, passwort_hash]
       );
 
       return NextResponse.json(
-        { success: true, message: 'Fahrer erfolgreich registriert!' },
+        {
+          success: true,
+          message: 'Registrierung erfolgreich. Dein Account muss erst vom Taxiunternehmen freigeschaltet werden, bevor du dich einloggen kannst.',
+        },
         { status: 201 }
       );
     }
@@ -138,14 +143,50 @@ export async function POST(request: Request) {
         );
       }
 
-      await db.run(
+      const result = await db.run(
         `INSERT INTO patienten (vorname, nachname, email, passwort_hash, kvnr)
          VALUES (?, ?, ?, ?, ?)`,
         [vorname, nachname, cleanEmail, passwort_hash, kvnr?.trim().toUpperCase() ?? null]
       );
 
+      // MFA-Code generieren — einmalig bei Registrierung, 10 Min gültig
+      // (US-7.1 AC2/AC3). Account bleibt bis zur Bestätigung mfa_verifiziert=0
+      // und kann sich nicht einloggen.
+      const mfaCode = Math.floor(100000 + Math.random() * 900000).toString();
+      const mfaExpires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+      await db.run(
+        `UPDATE patienten SET mfa_code = ?, mfa_expires = ? WHERE id = ?`,
+        [mfaCode, mfaExpires, result.lastID]
+      );
+
+      // E-Mail mit MFA-Code via Resend senden (US-7.1 AC2)
+      try {
+        const { Resend } = await import('resend');
+        const resend = new Resend(process.env.RESEND_API_KEY);
+        await resend.emails.send({
+          from: 'onboarding@resend.dev',
+          to: cleanEmail,
+          subject: 'Ihr MEINTAXI Bestätigungscode',
+          text: `Ihr MEINTAXI Bestätigungscode lautet: ${mfaCode}\n\nGültig für 10 Minuten.\n\nFalls Sie sich nicht registriert haben, ignorieren Sie diese E-Mail.`,
+        });
+      } catch (emailError) {
+        console.error('❌ E-Mail-Versand fehlgeschlagen:', emailError);
+        // Registrierung trotzdem abbrechen wenn E-Mail nicht ankommt
+        await db.run(`DELETE FROM patienten WHERE id = ?`, [result.lastID]);
+        return NextResponse.json(
+          { success: false, error: 'E-Mail konnte nicht gesendet werden. Bitte versuche es erneut.' },
+          { status: 500 }
+        );
+      }
+
       return NextResponse.json(
-        { success: true, message: 'Patient erfolgreich registriert!' },
+        {
+          success: true,
+          requireMfaVerification: true,
+          email: cleanEmail,
+          message: 'Registrierung erfolgreich. Bitte bestätige deine E-Mail-Adresse mit dem zugesendeten Code.',
+        },
         { status: 201 }
       );
     }

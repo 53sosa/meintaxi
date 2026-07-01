@@ -32,6 +32,24 @@ export async function openDb(): Promise<Database> {
   `);
 
   // ==========================================
+  // 1b. AIS-ZUGÄNGE — OAuth 2.0 Client Credentials (US-NEXT-02)
+  // client_id ist öffentlich (kein Geheimnis), client_secret_hash ist der gespeicherte
+  // SHA256-Hash des Secrets. Beide werden einmalig bei Anlage zurückgegeben.
+  // Kein BSNR im client_id — kein Hinweis auf Struktur für Angreifer.
+  // ==========================================
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS ais_zugaenge (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      bsnr                CHAR(9)      NOT NULL UNIQUE,
+      client_id           VARCHAR(60)  NOT NULL UNIQUE,
+      client_secret_hash  VARCHAR(255) NOT NULL,
+      praxis_name         VARCHAR(150) NOT NULL,
+      aktiv               INTEGER      NOT NULL DEFAULT 1,
+      erstellt_am         TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // ==========================================
   // 2. FAHRER — neu: status (aktiv/ausstehend/abgelehnt)
   // ==========================================
   await db.exec(`
@@ -50,6 +68,8 @@ export async function openDb(): Promise<Database> {
 
   // ==========================================
   // 3. PATIENTEN
+  // mfa_verifiziert: 0 = noch nicht bestätigt (kann sich nicht einloggen),
+  //   1 = bei Registrierung per MFA-Code bestätigt (US-7.1)
   // ==========================================
   await db.exec(`
     CREATE TABLE IF NOT EXISTS patienten (
@@ -61,6 +81,7 @@ export async function openDb(): Promise<Database> {
       kvnr          CHAR(10)     UNIQUE,
       mfa_code      VARCHAR(10),
       mfa_expires   TEXT,
+      mfa_verifiziert INTEGER    NOT NULL DEFAULT 0,
       erstellt_am   TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
     );
   `);
@@ -101,10 +122,16 @@ export async function openDb(): Promise<Database> {
 
   // ==========================================
   // 5. FAHRTEN — Freigabe-Workflow + GKV statt DMRZ
-  // freigabe_status: nicht_freigegeben / freigegeben / abgelehnt
+  // freigabe_status: nicht_freigegeben / freigegeben / abgelehnt / gebuendelt
+  //                  wartet_auf_rueckfahrt
+  //   wartet_auf_rueckfahrt: Hinfahrt bei Hin+Rück-Verordnung — wartet darauf
+  //     dass der gleiche oder ein anderer Fahrer die Rückfahrt abschließt.
+  //     Erscheint niemals in der Freigabe-Queue des Unternehmers (TASK-01).
+  //   gebuendelt: nicht mehr aktiv genutzt (ersetzt durch Update-Ansatz)
   // gkv_status:     ausstehend / pending / success / failed / signature_error
   // fahrtrichtung:  hinfahrt / rueckfahrt / beide
   // EDIFACT wird erst nach Freigabe generiert
+  // Identifikation ausschließlich über fahrer_id — keine Wagennummer
   // ==========================================
   await db.exec(`
     CREATE TABLE IF NOT EXISTS fahrten (
@@ -115,11 +142,11 @@ export async function openDb(): Promise<Database> {
 
       fahrtrichtung            TEXT    NOT NULL DEFAULT 'beide',
 
-      wagennummer              TEXT    NOT NULL,
       fahrtdatum               TEXT    NOT NULL,
       fahrt_von                TEXT    NOT NULL,
       fahrt_nach               TEXT    NOT NULL,
       km_einfach               REAL    NOT NULL,
+      km_kommentar             TEXT,
       hinfahrt                 INTEGER NOT NULL DEFAULT 1,
       rueckfahrt               INTEGER NOT NULL DEFAULT 1,
 
@@ -185,18 +212,8 @@ export async function openDb(): Promise<Database> {
 
   // ==========================================
   // 7. AIS-ZUGAENGE — neu für praxisspezifische Auth (US-NEXT-02)
-  // Noch nicht aktiv im Endpoint — Vorbereitung
-  // ==========================================
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS ais_zugaenge (
-      id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      bsnr         CHAR(9)      NOT NULL UNIQUE,
-      api_key_hash VARCHAR(255) NOT NULL,
-      praxis_name  VARCHAR(150) NOT NULL,
-      aktiv        INTEGER      NOT NULL DEFAULT 1,
-      erstellt_am  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
+  // Duplicate removed — Tabelle wird oben bereits angelegt
+
 
   return db;
 }

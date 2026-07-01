@@ -13,13 +13,13 @@ type Step =
   | 'abschluss_km'  // 4. km eingeben + Preis
   | 'uebersicht'    // 5. Zusammenfassung
   | 'unterschrift'  // 6. Patient unterschreibt
-  | 'fertig';       // 7. Erfolg + Download
+  | 'fertig';       // 7. Erfolg
 
 export default function FahrerPage() {
   const router = useRouter();
 
   const [fahrerName, setFahrerName] = useState('');
-  const [wagenNr, setWagenNr]       = useState('');
+  // Wagennummer entfernt — Identifikation läuft ausschließlich über fahrer_id (Session)
 
   const [step, setStep]             = useState<Step>('scan');
   const [loading, setLoading]       = useState(false);
@@ -27,34 +27,94 @@ export default function FahrerPage() {
 
   const [verordnung, setVerordnung] = useState<any>(null);
   const [tarif, setTarif]           = useState<any>(null);
+  // hinweis kommt von GET /api/kts/[id] wenn Status = hinfahrt_abgeschlossen (US-2.3)
+  const [hinweis, setHinweis]       = useState<any>(null);
 
-  // Formular-Felder
-  const [fahrtVon, setFahrtVon]     = useState('');
-  const [fahrtNach, setFahrtNach]   = useState('');
+  // fahrt_von/fahrt_nach sind KEIN Formularfeld mehr — kommen vollständig
+  // aus der Verordnung, inkl. automatischem Tausch bei Rückfahrt (US-4.2 AC1/AC3)
   const [fahrtdatum, setFahrtdatum] = useState(
     new Date().toISOString().slice(0, 10)
   );
-  const [hinfahrt, setHinfahrt]     = useState(true);
-  const [rueckfahrt, setRueckfahrt] = useState(false);
+  // Manueller Override für die Von/Nach-Zuordnung — Korrektur zu US-4.2 AC3
+  const [manuellerTausch, setManuellerTausch] = useState(false);
 
   // Abschluss-Felder
-  const [kmEinfach, setKmEinfach]   = useState('');
-  const [preis, setPreis]           = useState<any>(null);
+  const [kmEinfach, setKmEinfach]     = useState('');
+  const [kmIdentisch, setKmIdentisch] = useState(true);
+  const [kmKommentar, setKmKommentar] = useState('');
+  const [preis, setPreis]             = useState<any>(null);
+  // preisGesamt: Gesamtbetrag Hin+Rück — nur für Info-Anzeige beim Fahrer,
+  // Zuzahlung und Dashboard/EDIFACT (gleicher Fahrer, fahrtrichtung='beide')
+  const [preisGesamt, setPreisGesamt] = useState<any>(null);
+  const [infoOffen, setInfoOffen]     = useState(false);
 
   // Unterschrift
   const canvasRef                   = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing]   = useState(false);
   const [hasSignature, setHasSignature] = useState(false);
 
-  // Ergebnis
-  const [fahrtId, setFahrtId]               = useState('');
-  const [edifactDateiname, setEdifactDateiname] = useState('');
-  const [dmrzStatus, setDmrzStatus]         = useState('');
-
   // Scanner
   const [scanModus, setScanModus]           = useState<'kamera' | 'manuell'>('kamera');
   const [manuelleId, setManuelleId]         = useState('');
   const [scannerFehler, setScannerFehler]   = useState('');
+
+  // ============================================================
+  // Fahrtrichtung wird NICHT vom Fahrer gewählt, sondern aus
+  // Verordnung + Status abgeleitet (Ergänzung zu US-4.2 AC5).
+  // Der Server bestimmt das unabhängig noch einmal (US-4.7/US-4.8) —
+  // diese Werte hier sind reine Anzeige, keine Quelle der Wahrheit.
+  // ============================================================
+  const istRueckfahrtScan = verordnung?.status === 'hinfahrt_abgeschlossen';
+  const istGleicherFahrer = hinweis?.gleicher_fahrer === true;
+
+  const fahrtrichtung: 'hinfahrt' | 'rueckfahrt' | 'beide' = istRueckfahrtScan
+    ? (istGleicherFahrer ? 'beide' : 'rueckfahrt')
+    : (verordnung?.hinfahrt === 1 ? 'hinfahrt' : 'rueckfahrt');
+
+  // Adress-Tausch: Bei Rückfahrt nehmen wir die tatsächlich gefahrenen
+  // Adressen der Hinfahrt (aus hinweis) und kehren sie um — nicht die
+  // Original-AIS-Adressen. Das ist wichtig wenn der Fahrer bei der Hinfahrt
+  // manuell getauscht hat: dann war die Hinfahrt z.B. Beta→Alpha, und die
+  // Rückfahrt muss Alpha→Beta sein (Umkehrung der tatsächlichen Fahrt).
+  let fahrtVon: string;
+  let fahrtNach: string;
+
+  if (istRueckfahrtScan && hinweis?.hinfahrt_von && hinweis?.hinfahrt_nach) {
+    // Rückfahrt: Umkehrung der tatsächlich gefahrenen Hinfahrt-Adressen
+    const basisVon  = manuellerTausch ? hinweis.hinfahrt_nach : hinweis.hinfahrt_nach;
+    const basisNach = manuellerTausch ? hinweis.hinfahrt_von  : hinweis.hinfahrt_von;
+    fahrtVon  = basisVon;
+    fahrtNach = basisNach;
+  } else {
+    // Hinfahrt: Original-AIS-Adressen, mit optionalem manuellen Tausch
+    const automatischGetauscht = false;
+    const effektivGetauscht = manuellerTausch ? !automatischGetauscht : automatischGetauscht;
+    fahrtVon  = effektivGetauscht ? verordnung?.fahrt_nach : verordnung?.fahrt_von;
+    fahrtNach = effektivGetauscht ? verordnung?.fahrt_von  : verordnung?.fahrt_nach;
+  }
+
+  const kmMultiplikator = fahrtrichtung === 'beide' ? 2 : 1;
+
+  // Pflicht-Kommentar bei km-Abweichung — nur relevant wenn gleicher Fahrer
+  // Hin+Rück fährt (US-3.1 AC10)
+  const hinfahrtKmGerundet = hinweis?.hinfahrt_km != null ? Math.ceil(hinweis.hinfahrt_km) : null;
+  const kmEinfachGerundet  = kmEinfach ? Math.ceil(Number(kmEinfach)) : null;
+  // TASK-03: Pflicht-Kommentar nur wenn Checkbox "nicht identisch" + km weichen ab
+  const kommentarPflicht =
+    fahrtrichtung === 'beide' &&
+    !kmIdentisch &&
+    hinfahrtKmGerundet != null &&
+    kmEinfachGerundet != null &&
+    kmEinfachGerundet !== hinfahrtKmGerundet;
+
+  const fahrtrichtungLabel =
+    fahrtrichtung === 'hinfahrt' ? 'Hinfahrt' :
+    fahrtrichtung === 'rueckfahrt' ? 'Rückfahrt' : 'Hin + Rück';
+
+  const fahrtrichtungFarbe =
+    fahrtrichtung === 'hinfahrt' ? 'bg-blue-100 text-blue-700 border-blue-200' :
+    fahrtrichtung === 'rueckfahrt' ? 'bg-green-100 text-green-700 border-green-200' :
+    'bg-purple-100 text-purple-700 border-purple-200';
 
   useEffect(() => {
     const ladeSession = async () => {
@@ -64,7 +124,6 @@ export default function FahrerPage() {
         const data = await res.json();
         if (data.role !== 'fahrer') { router.push('/login'); return; }
         setFahrerName(`${data.fahrer.vorname} ${data.fahrer.nachname}`);
-        setWagenNr(data.fahrer.wagenNr ?? '');
       } catch { router.push('/login'); }
     };
     ladeSession();
@@ -72,37 +131,49 @@ export default function FahrerPage() {
 
   // Live-Preisberechnung (nur im abschluss_km Schritt)
   useEffect(() => {
-    if (!tarif || !kmEinfach || isNaN(Number(kmEinfach))) {
-      setPreis(null); return;
-    }
-    const km = Number(kmEinfach);
-    const fahrtenAnzahl = (hinfahrt ? 1 : 0) + (rueckfahrt ? 1 : 0);
-    const km_gesamt  = km * (fahrtenAnzahl > 0 ? fahrtenAnzahl : 1);
-    const zusatzKm   = Math.max(0, km_gesamt - 5);
-    const grund      = tarif.grundpauschale ?? 12.20;
-    const kmPreis    = tarif.preis_pro_zusatz_km ?? 2.39;
-    const strecke    = Math.round(zusatzKm * kmPreis * 100) / 100;
-    const brutto     = Math.round((grund + strecke) * 100) / 100;
+    if (!tarif) { setPreis(null); setPreisGesamt(null); return; }
 
-    const pflichtig  =
+    let kmBasis: number | null = null;
+    if (fahrtrichtung === 'beide' && kmIdentisch) {
+      if (!hinweis?.hinfahrt_km) { setPreis(null); setPreisGesamt(null); return; }
+      kmBasis = Math.ceil(hinweis.hinfahrt_km);
+    } else {
+      if (!kmEinfach || isNaN(Number(kmEinfach))) { setPreis(null); setPreisGesamt(null); return; }
+      kmBasis = Math.ceil(Number(kmEinfach));
+    }
+
+    const pflichtig =
       verordnung?.zuzahlungspflichtig === 1 &&
       verordnung?.zuzahlungsbefreit   === 0;
+    const grund   = tarif.grundpauschale ?? 12.20;
+    const kmPreis = tarif.preis_pro_zusatz_km ?? 2.39;
 
-    let zuzahlung = 0;
-    if (pflichtig) {
-      const roh = brutto * 0.10;
-      zuzahlung = Math.round(Math.max(5.00, Math.min(10.00, roh)) * 100) / 100;
+    const berechneFahrt = (km: number) => {
+      const zusatzKm = Math.max(0, km - 5);
+      const strecke  = Math.round(zusatzKm * kmPreis * 100) / 100;
+      const brutto   = Math.round((grund + strecke) * 100) / 100;
+      let zuzahlung  = 0;
+      if (pflichtig) {
+        const roh = brutto * 0.10;
+        zuzahlung = Math.round(Math.max(5.00, Math.min(10.00, roh)) * 100) / 100;
+      }
+      return { grundpauschale: grund, streckenpreis: strecke, gesamt_brutto: brutto,
+               zuzahlung, gesamt_netto: Math.round((brutto - zuzahlung) * 100) / 100,
+               km_abgerechnet: km };
+    };
+
+    if (fahrtrichtung === 'beide') {
+      // Fahrer sieht Einzelpreis der Rückfahrt mit eigener Zuzahlung.
+      // preisGesamt nur für das Info-Popup (Gesamtübersicht Hin+Rück).
+      const einzelPreis = berechneFahrt(kmBasis);
+      const gesamtPreis = berechneFahrt(kmBasis * 2);
+      setPreis(einzelPreis);
+      setPreisGesamt(gesamtPreis);
+    } else {
+      setPreis(berechneFahrt(kmBasis));
+      setPreisGesamt(null);
     }
-
-    setPreis({
-      grundpauschale: grund,
-      streckenpreis: strecke,
-      gesamt_brutto: brutto,
-      zuzahlung,
-      gesamt_netto: Math.round((brutto - zuzahlung) * 100) / 100,
-      km_abgerechnet: km_gesamt,
-    });
-  }, [kmEinfach, tarif, verordnung, hinfahrt, rueckfahrt]);
+  }, [kmEinfach, kmIdentisch, tarif, verordnung, kmMultiplikator, fahrtrichtung, hinweis]);
 
   const handleScan = async (ktsId: string) => {
     setLoading(true); setError(''); setScannerFehler('');
@@ -112,10 +183,7 @@ export default function FahrerPage() {
       if (!res.ok) throw new Error(data.error);
       setVerordnung(data.verordnung);
       setTarif(data.tarif);
-      setFahrtVon(data.verordnung.fahrt_von);
-      setFahrtNach(data.verordnung.fahrt_nach);
-      setHinfahrt(data.verordnung.hinfahrt === 1);
-      setRueckfahrt(data.verordnung.rueckfahrt === 1);
+      setHinweis(data.hinweis);
       setStep('formular');
     } catch (err: any) {
       setError(err.message);
@@ -134,25 +202,29 @@ export default function FahrerPage() {
     try {
       const canvas = canvasRef.current;
       const unterschrift_blob = canvas?.toDataURL('image/png') ?? '';
+
+      // TASK-03: Bei Rückfahrt gleicher Fahrer — Checkbox oder km-Wert senden
+      const payload: any = {
+        verordnung_id: verordnung.id,
+        fahrt_von: fahrtVon,
+        fahrt_nach: fahrtNach,
+        fahrtdatum,
+        km_kommentar: kmKommentar.trim() || null,
+        unterschrift_blob,
+      };
+      if (fahrtrichtung === 'beide' && kmIdentisch) {
+        payload.km_identisch_hinfahrt = true;
+      } else {
+        payload.km_einfach = Number(kmEinfach);
+      }
+
       const res = await fetch('/api/fahrten/abschliessen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          verordnung_id: verordnung.id,
-          fahrt_von: fahrtVon,
-          fahrt_nach: fahrtNach,
-          fahrtdatum,
-          km_einfach: Number(kmEinfach),
-          hinfahrt,
-          rueckfahrt,
-          unterschrift_blob,
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      setFahrtId(data.fahrt_id);
-      setEdifactDateiname(data.edifact_dateiname ?? '');
-      setDmrzStatus(data.dmrz_status ?? '');
       setStep('fertig');
     } catch (err: any) {
       setError(err.message);
@@ -195,10 +267,10 @@ export default function FahrerPage() {
   };
 
   const resetFahrt = () => {
-    setStep('scan'); setVerordnung(null); setTarif(null);
-    setKmEinfach(''); setFahrtVon(''); setFahrtNach('');
-    setPreis(null); setHasSignature(false);
-    setFahrtId(''); setEdifactDateiname(''); setError('');
+    setStep('scan'); setVerordnung(null); setTarif(null); setHinweis(null);
+    setKmEinfach(''); setKmIdentisch(true); setKmKommentar(''); setManuellerTausch(false);
+    setPreis(null); setPreisGesamt(null); setInfoOffen(false); setHasSignature(false);
+    setError('');
     setManuelleId(''); setScanModus('kamera');
   };
 
@@ -210,7 +282,7 @@ export default function FahrerPage() {
         <div className="flex justify-between items-center mb-6 border-b pb-4">
           <div>
             <h1 className="text-xl font-bold text-blue-600">MEINTAXI</h1>
-            <p className="text-xs text-gray-500">{fahrerName} · Wagen {wagenNr || '—'}</p>
+            <p className="text-xs text-gray-500">{fahrerName}</p>
           </div>
           <button onClick={handleLogout} className="text-xs text-red-500 hover:text-red-700 font-bold">
             Ausloggen
@@ -279,38 +351,54 @@ export default function FahrerPage() {
                 {verordnung.kasse_name} · {verordnung.befoerderungsart}
               </p>
             </div>
-            <div className="space-y-3">
+
+            {/* Fahrtrichtung — reine Anzeige, nicht editierbar (US-4.2 AC5) */}
+            <div className={`inline-flex px-3 py-1 rounded-full text-xs font-bold border ${fahrtrichtungFarbe}`}>
+              {fahrtrichtungLabel}
+            </div>
+
+            {hinweis && (
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 text-xs text-amber-700">
+                {hinweis.nachricht}
+              </div>
+            )}
+
+            <div className="space-y-1">
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">Fahrt von</label>
-                <input type="text" value={fahrtVon} onChange={e => setFahrtVon(e.target.value)}
-                  className="w-full p-3 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                <div className="w-full p-3 border rounded-xl text-sm bg-gray-50 text-gray-700">
+                  {fahrtVon}
+                </div>
               </div>
+              {/* TASK-02: Tausch-Button nur bei Hinfahrt — bei Rückfahrt
+                  tauscht das System automatisch, kein manueller Eingriff */}
+              {!istRueckfahrtScan && (
+                <div className="flex justify-center -my-1 relative z-10">
+                  <button type="button" onClick={() => setManuellerTausch(t => !t)}
+                    title="Von/Nach tauschen, falls die Verordnung die Adressen andersherum hinterlegt hat"
+                    className="bg-white border-2 border-gray-200 rounded-full w-8 h-8 flex items-center justify-center text-gray-500 hover:text-blue-600 hover:border-blue-300 transition-all shadow-sm">
+                    ⇄
+                  </button>
+                </div>
+              )}
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">Fahrt nach</label>
-                <input type="text" value={fahrtNach} onChange={e => setFahrtNach(e.target.value)}
-                  className="w-full p-3 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
+                <div className="w-full p-3 border rounded-xl text-sm bg-gray-50 text-gray-700">
+                  {fahrtNach}
+                </div>
               </div>
               <div>
                 <label className="text-xs text-gray-500 mb-1 block">Fahrtdatum</label>
                 <input type="date" value={fahrtdatum} onChange={e => setFahrtdatum(e.target.value)}
                   className="w-full p-3 border rounded-xl text-sm focus:ring-2 focus:ring-blue-500 outline-none" />
               </div>
-              <div className="flex gap-4">
-                <label className="flex items-center gap-2 text-sm cursor-pointer">
-                  <input type="checkbox" checked={hinfahrt} onChange={e => setHinfahrt(e.target.checked)}
-                    className="w-4 h-4 accent-blue-600" /> Hinfahrt
-                </label>
-                <label className="flex items-center gap-2 text-sm cursor-pointer">
-                  <input type="checkbox" checked={rueckfahrt} onChange={e => setRueckfahrt(e.target.checked)}
-                    className="w-4 h-4 accent-blue-600" /> Rückfahrt
-                </label>
-              </div>
             </div>
+
             <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 text-xs text-amber-700 text-center">
               💡 Tarif: {tarif?.kasse_name ?? 'vdek-NRW'} · {tarif?.grundpauschale ?? 12.20} € Grundpauschale · {tarif?.preis_pro_zusatz_km ?? 2.39} € / km ab km 6
             </div>
             <button onClick={() => setStep('fahrt_laeuft')}
-              disabled={!fahrtVon || !fahrtNach}
+              disabled={!fahrtdatum}
               className="w-full bg-green-600 text-white p-3 rounded-xl font-bold hover:bg-green-700 disabled:opacity-50 transition-all text-lg">
               🚕 Fahrt starten
             </button>
@@ -349,22 +437,70 @@ export default function FahrerPage() {
               {verordnung.patient_vorname} {verordnung.patient_nachname} ·
               {fahrtVon} → {fahrtNach}
             </p>
-            <div>
-              <label className="text-xs text-gray-500 mb-1 block font-semibold">
-                Kilometer vom Taxameter
-              </label>
-              <input type="number" placeholder="z.B. 12" value={kmEinfach}
-                onChange={e => setKmEinfach(e.target.value)} min="0" step="0.1"
-                className="w-full p-4 border-2 border-blue-300 rounded-xl text-2xl font-bold text-center focus:ring-2 focus:ring-blue-500 outline-none" />
-              {hinfahrt && rueckfahrt && (
-                <p className="text-xs text-gray-400 mt-1 text-center">
-                  Hin- und Rückfahrt: km × 2 = {kmEinfach ? Number(kmEinfach) * 2 : '?'} km gesamt
-                </p>
-              )}
-            </div>
+            {/* TASK-03: Bei Rückfahrt gleicher Fahrer → Checkbox-Ansatz.
+                Bei Hinfahrt oder anderem Fahrer → normale km-Eingabe */}
+            {fahrtrichtung === 'beide' ? (
+              <div className="space-y-3">
+                <div className="p-3 bg-purple-50 rounded-xl border border-purple-200">
+                  <p className="text-xs font-bold text-purple-700">Referenz Hinfahrt</p>
+                  <p className="text-lg font-bold text-purple-900">{hinfahrtKmGerundet} km</p>
+                </div>
+                <label className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={kmIdentisch}
+                    onChange={e => { setKmIdentisch(e.target.checked); setKmEinfach(''); setKmKommentar(''); }}
+                    className="w-4 h-4 accent-purple-600"
+                  />
+                  <span className="text-sm font-semibold text-gray-700">
+                    Kilometer sind identisch ({hinfahrtKmGerundet} km)
+                  </span>
+                </label>
+                {!kmIdentisch && (
+                  <div>
+                    <label className="text-xs text-gray-500 mb-1 block font-semibold">
+                      Abweichende Kilometer vom Taxameter
+                    </label>
+                    <input type="number" placeholder="z.B. 12" value={kmEinfach}
+                      onChange={e => setKmEinfach(e.target.value)} min="0" step="0.1"
+                      className="w-full p-4 border-2 border-red-300 rounded-xl text-2xl font-bold text-center focus:ring-2 focus:ring-red-400 outline-none" />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block font-semibold">
+                  Kilometer vom Taxameter
+                </label>
+                <input type="number" placeholder="z.B. 12" value={kmEinfach}
+                  onChange={e => setKmEinfach(e.target.value)} min="0" step="0.1"
+                  className="w-full p-4 border-2 border-blue-300 rounded-xl text-2xl font-bold text-center focus:ring-2 focus:ring-blue-500 outline-none" />
+              </div>
+            )}
 
             {preis && (
               <div className="p-4 bg-gray-50 rounded-xl border space-y-2 text-sm">
+                {fahrtrichtung === 'beide' && (
+                  <div className="flex justify-between items-center pb-1 border-b">
+                    <span className="text-xs font-bold text-purple-700">Rückfahrt</span>
+                    <button
+                      type="button"
+                      onClick={() => setInfoOffen(o => !o)}
+                      className="text-[10px] text-purple-600 underline">
+                      {infoOffen ? 'Info ausblenden' : 'ℹ️ Hin+Rück Gesamt anzeigen'}
+                    </button>
+                  </div>
+                )}
+                {infoOffen && preisGesamt && (
+                  <div className="p-2 bg-purple-50 rounded-lg border border-purple-200 text-xs text-purple-800 space-y-1">
+                    <p className="font-bold">Hin- und Rückfahrt gesamt ({preisGesamt.km_abgerechnet} km)</p>
+                    <div className="flex justify-between"><span>Grundpauschale</span><span>{preisGesamt.grundpauschale.toFixed(2)} €</span></div>
+                    {preisGesamt.streckenpreis > 0 && (
+                      <div className="flex justify-between"><span>Strecke ab km 6</span><span>{preisGesamt.streckenpreis.toFixed(2)} €</span></div>
+                    )}
+                    <div className="flex justify-between font-bold border-t pt-1"><span>Gesamt</span><span>{preisGesamt.gesamt_brutto.toFixed(2)} €</span></div>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-gray-500">Grundpauschale (km 1–5)</span>
                   <span className="font-semibold">{preis.grundpauschale.toFixed(2)} €</span>
@@ -395,8 +531,37 @@ export default function FahrerPage() {
               </div>
             )}
 
+            {/* Bemerkung zur Strecke — bei km-Abweichung zwischen Hin- und
+                Rückfahrt des gleichen Fahrers Pflichtfeld (US-3.1 AC10) */}
+            <div>
+              <label className="text-xs text-gray-500 mb-1 block font-semibold">
+                Bemerkung zur Strecke {kommentarPflicht
+                  ? '(Pflicht — Kilometer weichen von der Hinfahrt ab)'
+                  : '(optional, z.B. Umleitung)'}
+              </label>
+              {fahrtrichtung === 'beide' && hinfahrtKmGerundet != null && (
+                <p className="text-xs text-gray-400 mb-1">
+                  Hinfahrt: {hinfahrtKmGerundet} km · jetzt: {kmEinfachGerundet ?? '?'} km
+                </p>
+              )}
+              <textarea value={kmKommentar} onChange={e => setKmKommentar(e.target.value)}
+                placeholder="z.B. Umleitung wegen Baustelle" rows={2}
+                className={`w-full p-3 border rounded-xl text-sm focus:ring-2 outline-none ${
+                  kommentarPflicht ? 'border-red-300 focus:ring-red-400' : 'focus:ring-blue-500'
+                }`} />
+              {kommentarPflicht && !kmKommentar.trim() && (
+                <p className="text-xs text-red-500 mt-1">
+                  Kilometer weichen von der Hinfahrt ab — bitte kurz begründen.
+                </p>
+              )}
+            </div>
+
             <button onClick={() => setStep('uebersicht')}
-              disabled={!kmEinfach || !preis}
+              disabled={
+                !preis ||
+                (fahrtrichtung === 'beide' && kmIdentisch ? false : !kmEinfach) ||
+                (kommentarPflicht && !kmKommentar.trim())
+              }
               className="w-full bg-blue-600 text-white p-3 rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50 transition-all">
               Weiter zur Übersicht
             </button>
@@ -477,6 +642,7 @@ export default function FahrerPage() {
             <div className="p-6 bg-green-50 rounded-2xl border border-green-100">
               <span className="text-4xl block mb-3">✅</span>
               <p className="font-bold text-green-800 text-lg">Fahrt erfolgreich dokumentiert!</p>
+              <p className="text-sm text-green-600 mt-2">Wartet auf Freigabe durch das Taxiunternehmen.</p>
               {preis?.zuzahlung > 0 && (
                 <div className="mt-3 p-3 bg-amber-50 rounded-xl border border-amber-100">
                   <p className="text-amber-700 font-bold text-sm">
@@ -485,21 +651,6 @@ export default function FahrerPage() {
                 </div>
               )}
             </div>
-            <div className={`p-3 rounded-xl text-xs font-semibold ${
-              dmrzStatus === 'success' ? 'bg-green-50 text-green-700' :
-              dmrzStatus === 'failed'  ? 'bg-red-50 text-red-700' :
-              'bg-gray-50 text-gray-600'
-            }`}>
-              {dmrzStatus === 'success' && '✓ Abrechnung an DMRZ übermittelt'}
-              {dmrzStatus === 'failed'  && '⚠️ DMRZ-Übermittlung fehlgeschlagen'}
-              {dmrzStatus === 'pending' && '⏳ Übermittlung ausstehend'}
-            </div>
-            {edifactDateiname && (
-              <button onClick={() => window.open(`/api/fahrten/${fahrtId}/edifact`, '_blank')}
-                className="w-full bg-gray-800 text-white p-3 rounded-xl font-bold hover:bg-gray-900 transition-all">
-                📄 EDIFACT herunterladen ({edifactDateiname})
-              </button>
-            )}
             <button onClick={resetFahrt}
               className="w-full bg-blue-600 text-white p-3 rounded-xl font-bold hover:bg-blue-700 transition-all">
               Neue Fahrt starten

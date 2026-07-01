@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 export default function RegisterPage() {
+  const router = useRouter();
   const [role, setRole] = useState<'unternehmen' | 'fahrer' | 'patient'>('unternehmen');
 
   const [formData, setFormData] = useState({
@@ -16,6 +18,13 @@ export default function RegisterPage() {
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [generatedCode, setGeneratedCode] = useState('');
+
+  // Patienten-MFA-Bestätigung direkt nach der Registrierung (US-7.1 AC2/AC3)
+  const [mfaStep, setMfaStep] = useState(false);
+  const [registeredEmail, setRegisteredEmail] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
+  const [mfaLoading, setMfaLoading] = useState(false);
+  const [mfaError, setMfaError] = useState('');
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -60,13 +69,42 @@ export default function RegisterPage() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
 
-      setSuccessMsg(data.message);
-      if (data.firmen_code) setGeneratedCode(data.firmen_code);
+      if (data.requireMfaVerification) {
+        setRegisteredEmail(data.email);
+        setMfaStep(true);
+      } else {
+        setSuccessMsg(data.message);
+        if (data.firmen_code) setGeneratedCode(data.firmen_code);
+      }
 
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleMfaVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setMfaLoading(true);
+    setMfaError('');
+
+    try {
+      const response = await fetch('/api/auth/verify-mfa', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: registeredEmail, mfaCode }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+
+      router.push(data.redirect);
+
+    } catch (err: any) {
+      setMfaError(err.message);
+    } finally {
+      setMfaLoading(false);
     }
   };
 
@@ -94,6 +132,45 @@ export default function RegisterPage() {
             </button>
           ))}
         </div>
+
+        {/* MFA-BESTÄTIGUNG NACH PATIENTEN-REGISTRIERUNG */}
+        {mfaStep && (
+          <div className="space-y-4">
+            <div className="p-4 bg-green-50 rounded-xl border border-green-100 text-center">
+              <span className="text-2xl block mb-2">🔒</span>
+              <p className="font-bold text-green-800">E-Mail bestätigen</p>
+              <p className="text-xs text-green-600 mt-1">
+                Wir haben einen 6-stelligen Code an {registeredEmail} gesendet.
+                Der Code ist 10 Minuten gültig.
+              </p>
+            </div>
+
+            {mfaError && (
+              <div className="p-3 bg-red-50 text-red-600 text-sm rounded-xl border border-red-100 font-semibold text-center">
+                ⚠️ {mfaError}
+              </div>
+            )}
+
+            <form onSubmit={handleMfaVerify} className="space-y-4">
+              <input
+                type="text"
+                placeholder="000000"
+                maxLength={6}
+                value={mfaCode}
+                onChange={e => setMfaCode(e.target.value)}
+                required
+                className="w-full p-3 border-2 border-green-300 rounded-xl text-center text-2xl tracking-widest font-mono font-bold outline-none focus:border-green-500"
+              />
+              <button
+                type="submit"
+                disabled={mfaLoading}
+                className="w-full bg-green-600 text-white p-3 rounded-xl font-bold shadow-lg hover:bg-green-700 disabled:opacity-50 transition-all"
+              >
+                {mfaLoading ? 'Prüfe...' : 'Code bestätigen'}
+              </button>
+            </form>
+          </div>
+        )}
 
         {/* ERFOLGSMELDUNG */}
         {successMsg && (
@@ -126,7 +203,7 @@ export default function RegisterPage() {
         )}
 
         {/* FORMULAR */}
-        {!successMsg && (
+        {!successMsg && !mfaStep && (
           <form onSubmit={handleSubmit} className="space-y-4">
 
             {/* UNTERNEHMEN */}
@@ -213,8 +290,9 @@ export default function RegisterPage() {
                 </p>
                 <div className="p-3 bg-blue-50 rounded-xl border border-blue-100">
                   <p className="text-xs text-blue-700">
-                    🔒 Nach dem Login erhältst du einen Sicherheitscode per E-Mail
-                    zur Bestätigung deiner Identität (Zwei-Faktor-Authentifizierung).
+                    🔒 Direkt nach der Registrierung erhältst du einen
+                    Sicherheitscode per E-Mail zur einmaligen Bestätigung
+                    deiner Identität. Danach reichen E-Mail und Passwort zum Einloggen.
                   </p>
                 </div>
               </>

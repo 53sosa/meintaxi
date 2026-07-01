@@ -29,7 +29,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
-    const { email, password, wagenNr, mfaCode } = body;
+    const { email, password } = body;
 
     if (!email || !password) {
       return NextResponse.json(
@@ -93,16 +93,9 @@ export async function POST(request: Request) {
         );
       }
 
-      // Wagennummer noch nicht angegeben → Frontend zeigt Schritt 2
-      if (!wagenNr) {
-        return NextResponse.json(
-          { success: true, requireWagenNr: true, vorname: fahrer.vorname },
-          { status: 200 }
-        );
-      }
-
-      // Wagennummer in Session speichern (nicht localStorage)
-      await createSession(fahrer.id, 'fahrer', wagenNr);
+      // Identifikation läuft ausschließlich über fahrer.id in der Session —
+      // kein Wagennummer-Zwischenschritt mehr (US-1.3 AC1/AC3)
+      await createSession(fahrer.id, 'fahrer');
       return NextResponse.json(
         { success: true, role: 'fahrer', redirect: '/fahrer' },
         { status: 200 }
@@ -110,7 +103,9 @@ export async function POST(request: Request) {
     }
 
     // ==========================================
-    // 3. PATIENT (mit MFA)
+    // 3. PATIENT
+    // MFA passiert nur einmalig bei der Registrierung (siehe
+    // /api/auth/verify-mfa) — Login danach nur E-Mail + Passwort (US-7.1 AC5)
     // ==========================================
     const patient = await db.get(
       `SELECT * FROM patienten WHERE LOWER(email) = ?`,
@@ -125,45 +120,16 @@ export async function POST(request: Request) {
         );
       }
 
-      // MFA-Code wurde mitgeschickt → verifizieren
-      if (mfaCode) {
-        const codeStimmt  = patient.mfa_code === mfaCode.trim();
-        const nochGueltig = patient.mfa_expires && new Date(patient.mfa_expires) > new Date();
-
-        if (codeStimmt && nochGueltig) {
-          // Code verbraucht → löschen
-          await db.run(
-            `UPDATE patienten SET mfa_code = NULL, mfa_expires = NULL WHERE id = ?`,
-            [patient.id]
-          );
-          await createSession(patient.id, 'patient');
-          return NextResponse.json(
-            { success: true, role: 'patient', redirect: '/patient' },
-            { status: 200 }
-          );
-        } else {
-          return NextResponse.json(
-            { success: false, error: 'Ungültiger oder abgelaufener Code.' },
-            { status: 400 }
-          );
-        }
+      if (patient.mfa_verifiziert !== 1) {
+        return NextResponse.json(
+          { success: false, error: 'Bitte zuerst E-Mail-Adresse bestätigen.' },
+          { status: 403 }
+        );
       }
 
-      // Kein MFA-Code → neuen generieren (10 min gültig)
-      const generierterCode = Math.floor(100000 + Math.random() * 900000).toString();
-      const ablaufzeit = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-
-      await db.run(
-        `UPDATE patienten SET mfa_code = ?, mfa_expires = ? WHERE id = ?`,
-        [generierterCode, ablaufzeit, patient.id]
-      );
-
-      // In Produktion: hier E-Mail senden
-      // Für Entwicklung: Code in Konsole ausgeben
-      console.log(`\n🔐 MFA-CODE FÜR ${patient.email}: ${generierterCode}\n`);
-
+      await createSession(patient.id, 'patient');
       return NextResponse.json(
-        { success: true, requireMFA: true },
+        { success: true, role: 'patient', redirect: '/patient' },
         { status: 200 }
       );
     }

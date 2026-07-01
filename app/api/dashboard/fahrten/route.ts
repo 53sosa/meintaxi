@@ -22,12 +22,27 @@ export async function GET(request: Request) {
     const db = await openDb();
 
     // Query dynamisch aufbauen je nach Filter
-    let whereKlauseln = ['f.unternehmen_id = ?'];
+    // 'gebuendelt': aufgegangene Hinfahrt-Einträge bei gleichen Fahrern
+    // 'wartet_auf_rueckfahrt': Hinfahrt die noch auf Rückfahrt wartet —
+    //   beide niemals im Dashboard anzeigen (TASK-01)
+    let whereKlauseln = [
+      'f.unternehmen_id = ?',
+      "f.freigabe_status != 'gebuendelt'",
+      "f.freigabe_status != 'wartet_auf_rueckfahrt'",
+    ];
     const params: any[] = [session.userId];
 
     if (filterStatus && filterStatus !== 'alle') {
-      whereKlauseln.push('f.freigabe_status = ?');
-      params.push(filterStatus);
+      // 'gkv_uebermittelt' ist keine eigene freigabe_status-Spalte, sondern
+      // eine Kombination aus freigegeben + erfolgreich an die GKV übermittelt
+      // (US-1.4 AC2 — bisher nur als Unter-Badge sichtbar, jetzt auch als
+      // eigener Filter)
+      if (filterStatus === 'gkv_uebermittelt') {
+        whereKlauseln.push("f.freigabe_status = 'freigegeben'", "f.gkv_status = 'success'");
+      } else {
+        whereKlauseln.push('f.freigabe_status = ?');
+        params.push(filterStatus);
+      }
     }
 
     if (filterJahr) {
@@ -45,7 +60,7 @@ export async function GET(request: Request) {
     const fahrten = await db.all(
       `SELECT
         f.id, f.fahrtdatum, f.fahrt_von, f.fahrt_nach,
-        f.km_einfach, f.wagennummer,
+        f.km_einfach, f.km_kommentar,
         f.gesamt_brutto, f.zuzahlung, f.gesamt_netto,
         f.hinfahrt, f.rueckfahrt,
         f.fahrtrichtung,
@@ -80,6 +95,7 @@ export async function GET(request: Request) {
       abgelehnt:         0,
       kassenanteil:      0,
       gkv_failed:        0,
+      gkv_uebermittelt:  0,
     };
 
     alleFreigabe.forEach((row: any) => {
@@ -95,6 +111,14 @@ export async function GET(request: Request) {
       [session.userId]
     );
     stats.gkv_failed = gkvFehler?.count ?? 0;
+
+    // GKV erfolgreich übermittelt zählen (für den neuen Filter-Button)
+    const gkvUebermittelt = await db.get(
+      `SELECT COUNT(*) as count FROM fahrten
+       WHERE unternehmen_id = ? AND freigabe_status = 'freigegeben' AND gkv_status = 'success'`,
+      [session.userId]
+    );
+    stats.gkv_uebermittelt = gkvUebermittelt?.count ?? 0;
 
     // Kassenanteil aller freigegebenen Fahrten
     const kassenanteil = await db.get(

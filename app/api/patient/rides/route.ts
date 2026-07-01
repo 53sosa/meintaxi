@@ -56,7 +56,7 @@ export async function GET(request: Request) {
           behandlung_beschreibung, gueltig_bis,
           erstellt_am
         FROM verordnungen
-        WHERE UPPER(patient_kvnr) = ? AND status = 'offen'
+        WHERE UPPER(patient_kvnr) = ?
         ORDER BY erstellt_am DESC LIMIT 1`,
         [kvnr.trim().toUpperCase()]
       );
@@ -90,7 +90,6 @@ export async function GET(request: Request) {
         FROM verordnungen
         WHERE UPPER(patient_kvnr) = ?
           AND patient_geburtsdatum = ?
-          AND status = 'offen'
         ORDER BY erstellt_am DESC LIMIT 1`,
         [kvnr.trim().toUpperCase(), geburtsdatum.trim()]
       );

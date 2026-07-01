@@ -72,8 +72,11 @@ export async function POST(
 
     // Nur nicht-freigegebene Fahrten können freigegeben werden
     if (fahrt.freigabe_status !== 'nicht_freigegeben') {
+      const meldung = fahrt.freigabe_status === 'gebuendelt'
+        ? 'Diese Fahrt wurde mit der Rückfahrt desselben Fahrers zusammengeführt und kann nicht mehr separat freigegeben werden — die kombinierte Fahrt findest du als eigenen Eintrag.'
+        : `Fahrt hat bereits Status: ${fahrt.freigabe_status}`;
       return NextResponse.json(
-        { success: false, error: `Fahrt hat bereits Status: ${fahrt.freigabe_status}` },
+        { success: false, error: meldung },
         { status: 409 }
       );
     }
@@ -131,7 +134,12 @@ export async function POST(
     );
     const lfdNr = String((anzahl?.count ?? 0) + 1).padStart(5, '0');
 
-    // 5. EDIFACT generieren
+    // 5. EDIFACT generieren — funktioniert unverändert für alle drei
+    // fahrtrichtung-Werte ('hinfahrt' / 'rueckfahrt' / 'beide'), weil seit
+    // der Bündelungs-Korrektur in abschliessen/route.ts pro wirtschaftlicher
+    // Fahrt immer genau ein fahrten-Eintrag mit den korrekten kombinierten
+    // Werten existiert (km, Grundpauschale, Streckenpreis) — keine
+    // Sonderbehandlung hier nötig.
     let edifact_datei:     string | null = null;
     let edifact_dateiname: string | null = null;
     let gkv_status         = 'failed';
@@ -213,6 +221,7 @@ export async function POST(
         success: true,
         aktion:  'freigegeben',
         fahrt_id,
+        fahrtrichtung: fahrt.fahrtrichtung,
         edifact_dateiname,
         gkv_status,
         gkv_referenz,
