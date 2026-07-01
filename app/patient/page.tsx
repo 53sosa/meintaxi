@@ -40,6 +40,9 @@ export default function PatientDashboard() {
   const [loading, setLoading]             = useState(true);
   const [error, setError]                 = useState('');
 
+  // Fahrtenhistorie (US-PAT-01)
+  const [fahrtHistory, setFahrtHistory]   = useState<any[]>([]);
+
   // DSGVO: Formular erst nach Geburtsdatum-Eingabe sichtbar
   const [entsperrt, setEntsprerrt]        = useState(false);
   const [geburtsdatumEingabe, setGeburtsdatumEingabe] = useState('');
@@ -84,6 +87,13 @@ export default function PatientDashboard() {
           setRide(ridesData.ride);
         } else {
           setError('Aktuell liegt keine aktive Transportverordnung vor.');
+        }
+
+        // 3. Fahrtenhistorie laden (US-PAT-01)
+        const histRes = await fetch('/api/patient/history');
+        if (histRes.ok) {
+          const histData = await histRes.json();
+          setFahrtHistory(histData.fahrten ?? []);
         }
       } catch (err: any) {
         setError(err.message);
@@ -332,6 +342,56 @@ export default function PatientDashboard() {
             )}
           </div>
         )}
+
+        {/* FAHRTENHISTORIE (US-PAT-01) */}
+        <div className="mt-6 pt-4 border-t">
+          <h3 className="text-sm font-bold text-gray-700 mb-3">Meine Fahrten</h3>
+
+          {fahrtHistory.length === 0 ? (
+            <p className="text-xs text-gray-400 text-center py-4">
+              Noch keine Fahrten vorhanden.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {fahrtHistory.map((f: any) => {
+                // Datum formatieren
+                const datum = f.fahrtdatum
+                  ? new Date(f.fahrtdatum).toLocaleDateString('de-DE')
+                  : f.fahrtdatum;
+
+                // Fahrtrichtung Badge
+                const richtungConfig: Record<string, { label: string; style: string }> = {
+                  hinfahrt:   { label: 'Hinfahrt',  style: 'bg-blue-100 text-blue-800' },
+                  rueckfahrt: { label: 'Rückfahrt', style: 'bg-green-100 text-green-800' },
+                  beide:      { label: 'Hin+Rück',  style: 'bg-purple-100 text-purple-800' },
+                };
+                const richtung = richtungConfig[f.fahrtrichtung] ?? { label: f.fahrtrichtung, style: 'bg-gray-100 text-gray-600' };
+
+                return (
+                  <div key={f.id} className="bg-gray-50 rounded-lg p-3 text-xs">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-gray-500 font-medium">{datum}</span>
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${richtung.style}`}>
+                        {richtung.label}
+                      </span>
+                    </div>
+                    <div className="text-gray-700 mb-1 truncate">
+                      {f.fahrt_von} → {f.fahrt_nach}
+                    </div>
+                    <div className="flex justify-between text-gray-600">
+                      <span>Gesamt: <strong>{Number(f.gesamt_brutto).toFixed(2).replace('.', ',')} €</strong></span>
+                      <span>
+                        {f.zuzahlung > 0
+                          ? `Zuzahlung: ${Number(f.zuzahlung).toFixed(2).replace('.', ',')} €`
+                          : 'Keine Zuzahlung'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
         {/* LOGOUT */}
         <div className="text-center mt-6 pt-4 border-t">
